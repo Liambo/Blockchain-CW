@@ -5,11 +5,13 @@ import ecdsa
 import base58
 from ecdsa import SECP256k1
 
+
 def hash_list(tx):
     hash_lst = []
     for i in tx:
         hash_lst.append(hashlib.sha256(str(i).encode()).hexdigest())
     return hash_lst
+
 
 def construct_merkle(tx):
     if len(tx) == 1:
@@ -26,6 +28,7 @@ def construct_merkle(tx):
         if len(tx)%2 == 1:
             tx_lst.append(tx[-1])
         return(construct_merkle(tx_lst))
+
 
 def compress_pubkey(key):
     # Removes y-coordinate and prefixes '0x02' if even or '0x03' if odd, as one of each exists for every x-coordinate.
@@ -60,11 +63,10 @@ def generate_wallet():
     addr = hashlib.new('ripemd160', hashlib.sha256(pubkey).digest()).digest()
     addr_checksum = hashlib.sha256(hashlib.sha256(b"\x00" + addr).digest()).digest()[:4]
     addr = base58.b58encode(b"\x00" + addr + addr_checksum).decode('utf-8')
+    return(wif, addr, sk, vk)
 
-    return(wif, addr, sk.to_string().hex(), pubkey.hex())
 
 def load_wallet(wif):
-
     # Find address and private & public keys from WIF. Checks if public key is compressed, depending on length of WIF key.
     priv_key = base58.b58decode(wif)
     if len(priv_key) == 38:
@@ -74,7 +76,6 @@ def load_wallet(wif):
         sk = ecdsa.SigningKey.from_string(base58.b58decode(wif)[1:-4], curve=SECP256k1)
         compressed = False
     vk = sk.verifying_key
-
     # Address calculated in same way as in generate_wallet()
     if compressed:
         pub_key = compress_pubkey(vk.to_string())
@@ -83,8 +84,7 @@ def load_wallet(wif):
     addr = hashlib.new('ripemd160', hashlib.sha256(pub_key).digest()).digest()
     addr_checksum = hashlib.sha256(hashlib.sha256(b"\x00" + addr).digest()).digest()[:4]
     addr = base58.b58encode(b"\x00" + addr + addr_checksum).decode('utf-8')
-
-    return(addr, sk.to_string().hex(), pub_key.hex())
+    return(addr, sk, vk)
 
 
 class Wallet:
@@ -100,18 +100,73 @@ class Wallet:
         print("Wallet ID: " + self.id)
         print("WIF Private Key: " + self.wif)
         print("Address: " + self.addr)
-        print("Private key: " + self.priv_key)
-        print("Public key: " + self.pub_key)
-
+        print("Private key: " + self.priv_key.to_string().hex())
+        print("Public key: " + self.pub_key.to_string().hex())
+    
+    def construct_tx(self, blockchain, input_txids, input_indexs, outputs, amounts):
+        if len(input_txids) == 0 or len(outputs) == 0: # Various error checks...
+            print('Error: Input or output lists empty')
+            return
+        if len(input_txids) != len(input_indexs):
+            print('Error: Length of txid and index lists unequal')
+            return
+        if len(outputs) != len(amounts):
+            print('Error: Length of output keys not equal to length of amounts')
+            return
+        if len(input_txids) > 15 or len(outputs) > 15:
+            print('Error: Can only have up to 15 inputs or outputs')
+            return
+        tx = '0'*(2 - len(hex(len(input_txids))[2:])) + hex(len(input_txids))[2:] # Start tx with no. of inputs. Ensures this is 2 digits long.
+        input_sum = 0
+        confirmed = True
+        for i in range(len(input_txids)): # Loops through all txs and check for various errors
+            if not confirmed: # If the previous TXID was never found in the blockchain...
+                print('Error: TXID '+ input_txids[i-1] + ' not found')
+                return
+            confirmed = False
+            for block in blockchain:
+                for j in range(len(block.tx)): # Loop through all txs in every block on the chain
+                    if input_txids[i] == hashlib.sha256(block.tx[j].encode()).hexdigest(): # If TXID found
+                        confirmed = True
+                        input_no = int('0x' + block.tx[j][:2], 16) # No. of inputs in found transaction
+                        output_start = 4 + input_no * 194 + input_indexs[i] * 136 # Index of where relevant output will start
+                        output_amount = int('0x' + block.tx[j][output_start:output_start+8], 16) # Amount being redeemed in output
+                        input_sum += output_amount
+                        scriptsig = self.priv_key.sign(block.tx[j].encode()).hex() # Generate unlocking script for this output
+                        vout = '0'*(2 - len(hex(input_indexs[i])[2:])) + hex(input_indexs[i])[2:] # Ensure output index is of correct length
+                        tx += input_txids[i] + vout + scriptsig # Append all to transaction
+                        break
+                if confirmed:
+                    break
+        if not confirmed: # Checking if last TXID was actually found
+            print('Error: TXID '+ input_txids[i-1] + ' not found')
+            return
+        if input_sum < sum(amounts): # Check if input sum smaller than output
+            print('Error: Sum of outputs larger than inputs')
+            return
+        if input_sum > sum(amounts):
+            tx += '0'*(2 - len(hex(len(outputs))[2:])) + hex(len(outputs)+1)[2:] # Add number of outputs to transaction, accounting for 'change' output if inputs > outputs
+        else:   
+            tx += '0'*(2 - len(hex(len(outputs))[2:])) + hex(len(outputs))[2:] # Add number of outputs to transaction
+        for i in range(len(outputs)): # For every output add amount (8 digits) and pubkey (128 digits)
+            amount = '0'*(8 - len(hex(amounts[i])[2:])) + hex(amounts[i])[2:]
+            tx += amount + outputs[i]
+        if input_sum > sum(amounts): # If input sum larger than output sum, return change to owner
+            amount = '0'*(8 - len(hex(input_sum-sum(amounts))[2:])) + hex(input_sum-sum(amounts))[2:]
+            tx += amount + self.pub_key.to_string().hex()
+        return tx
 
 
 class Block:
-    def __init__(self, block_id, previous_block_hash, difficulty, tx, timestamp):
+    def __init__(self, block_id, previous_block_hash, difficulty, tx):
         self.block_id = block_id
         self.previous_block_hash = previous_block_hash
         self.difficulty = difficulty
-        self.timestamp = timestamp
+        self.timestamp = datetime.datetime.now()
         self.tx = tx
+        self.valid_tx = self.validate_tx()
+        if self.valid_tx != True:
+            print(self.valid_tx)
         self.merkle_root = construct_merkle(hash_list(tx))
         self.nonce = self.mine_block()
         self.header = [self.block_id, self.previous_block_hash, self.nonce, self.timestamp, self.merkle_root]
@@ -127,17 +182,73 @@ class Block:
         while self.get_hash(nonce)[:self.difficulty] != "0"*self.difficulty:
             nonce = random.randint(0, 4294967296)
         return nonce
+    
+    def display_info(self):
+        print('Block ID: '+self.block_id)
+        print('Hash: '+self.hash)
+        print('Previous block hash: '+self.previous_block_hash)
+        print('Difficulty: '+str(self.difficulty))
+        print('Timestamp: '+str(self.timestamp))
+        print('Merkle root: '+self.merkle_root)
+        print('Nonce: '+str(self.nonce))
+        print('Transaction list: '+str(self.tx))
+        print('Transaction IDs:'+str(hash_list(self.tx)))
+
+    def validate_tx(self):
+        global block_chain
+        for tx in self.tx: # Loop through all transactions to validate
+            input_sum = 0
+            output_sum = 0
+            inputs = int("0x" + tx[:2], 16) # Get no. of inputs form current transaction
+            inputs_length = inputs*194+2 # Total length of inputs in tx
+            for i in range(inputs): # Loop to do verifications for every input (check input not already redeemed & check signatures)
+                txid_verified = False
+                txid = tx[2+194*i:66+194*i] # TXID currently being checked
+                output = int("0x" + tx[66+194*i:68+194*i], 16) # Relevant position in output of previous transaction
+                scriptsig = bytes.fromhex(tx[68+194*i:196+194*i]) # Scriptsig of input to be verified
+                for block in reversed(block_chain): # Loop through blockchain to check prev. transactions. This is done in reverse to be faster on long blockchains.
+                    for validate_tx in reversed(block.tx): # We loop through transactions in reverse order so if we verify the transaction we can break, rather than having to check remaining transactions for double spend.
+                        validate_inputs = int("0x" + validate_tx[:2], 16) # No. of inputs in tx being checked
+                        output_start = 4+validate_inputs*194 + output*136 # Start of our relevant output
+                        if txid == hashlib.sha256(validate_tx.encode()).hexdigest(): # If there is a match...
+                            input_sum += int("0x" + validate_tx[output_start:output_start+8], 16) # Add amount to input sum
+                            pubkey = bytes.fromhex(validate_tx[output_start+8:output_start+136]) # Get pubkey from output
+                            vk = ecdsa.VerifyingKey.from_string(pubkey, curve=SECP256k1)
+                            try:
+                                vk.verify(scriptsig, validate_tx.encode()) # Verify pubkey against scriptsig. Returns BadSignatureError if invalid signature.
+                                txid_verified = True
+                                break
+                            except ecdsa.keys.BadSignatureError:
+                                return('Error: Invalid scriptsig in transaction: '+tx)
+                        for j in range(validate_inputs): # Check all inputs of tx to check for double spend attempts
+                            validate_txid = validate_tx[2+194*j:66+194*j]
+                            if validate_txid == txid:
+                                return('Error: Double spend attempt in transaction: '+tx)
+                    if txid_verified: # If tx has been verified, we know it is also not a double spend attempt as previous attempts to spend the output would have ben found after the original output.
+                        break
+            outputs =  int("0x" + tx[inputs_length:inputs_length+2], 16)
+            for i in range(outputs): # Sum up all outputs, check if equal to inputs
+                output_amount = int("0x" + tx[inputs_length+2+i*136:inputs_length+10+i*136], 16)
+                output_sum += output_amount
+            if input_sum != output_sum:
+                return('Error: Transaction inputs & outputs don\'t sum for transaction: '+tx)
+        return True
 
     @staticmethod
     def create_genesis_block(tx):
-        return Block("0", "0", "0", tx, datetime.datetime.now())
+        return Block("0", "0", 0, tx)
 
-block_chain = [Block.create_genesis_block(["000320"])]
+
+block_chain = [Block.create_genesis_block(["0001000f4240b0cd4e655af53f1c865782864e15aa5d414b8fa1fa2537e90903661f345a02ea309e2c6f488480a6a4fd89c182b834c8ec1b78e2a33751d7fb05dd2bf6fb7f71"])]
 genesis_hash = block_chain[0].hash
 print("The genesis block has been created.")
-print("Hash: %s" %genesis_hash)
-block_chain.append(Block())
-
-
-A = Wallet("A", "KyPxc6bEDTc9gLFaeh5yLpPqReMey12HcUNTLCWfUsmntWrkMNez")
+block_chain[0].display_info()
+A = Wallet("A", "L2WNfN7uaW58U2STZ52d2QzKreokSYJbj93j5e7NTbUGiRshBJ2f")
 A.display_info()
+B = Wallet("B", "KwR7ekm6VmQJt7rHv3LXTdpSRiQJ3BdM2Ac97QyJ6YeeZNNpSdD9")
+B.display_info()
+C = Wallet("C", "L2ywvanKbTZ2x17uXtjKsLFJpaMgMJWJLASpLJqEQPH8yTQVtZq6")
+C.display_info()
+tx = A.construct_tx(block_chain, ['45d7e470fcbd2c9dfd7086178044a58f0bc31bbc00bc581ac77f23a261c0cdc6'], [0], ['064eabd846cc09740d00f27dc149ad6a376fa275df5de265e6b94111915e29023e08fc9c1d07a86d77090871b3ac77ad507fcd9a41a636c61990549123aaea48'], [50000])
+block_chain.append(Block(1, '223fc19076ef413010f4077c7b5ee1b4ff9f91a1efa88cff582a97f75dcac481', 3, [tx]))
+print(block_chain)
