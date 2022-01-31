@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html>
+<head>
+<script src="buidljs/buidl.js"></script>
+<script src="qrcodejs/qrcode.js"></script>
+</head>
+<body>
+A private key & wallet address with QR code:
+<div id="A_pk"></div>
+<div id="A_addr"></div>
+<div id="A_qr"></div>
+<p>
+B private key & wallet address with QR code:
+<div id="B_pk"></div>
+<div id="B_addr"></div>
+<div id="B_qr"></div>
+<p>
+C private key & wallet address with QR code:
+<div id="C_pk"></div>
+<div id="C_addr"></div>
+<div id="C_qr"></div>
+<script>
+var A_newPair = buidl.createP2PKH();
+document.getElementById("A_addr").innerHTML = A_newPair.addr;
+document.getElementById("A_pk").innerHTML = A_newPair.pk;
+var A_qr = new QRCode(document.getElementById("A_qr"), {
+	text: A_newPair.addr,
+	width: 128,
+	height: 128,
+	colorDark : "#000000",
+	colorLight : "#ffffff",
+	correctLevel : QRCode.CorrectLevel.H
+});
+var B_newPair = buidl.createP2PKH();
+document.getElementById("B_addr").innerHTML = B_newPair.addr;
+document.getElementById("B_pk").innerHTML = B_newPair.pk;
+var B_qr = new QRCode(document.getElementById("B_qr"), {
+	text: B_newPair.addr,
+	width: 128,
+	height: 128,
+	colorDark : "#000000",
+	colorLight : "#ffffff",
+	correctLevel : QRCode.CorrectLevel.H
+});
+var C_newPair = buidl.createP2PKH();
+document.getElementById("C_addr").innerHTML = C_newPair.addr;
+document.getElementById("C_pk").innerHTML = C_newPair.pk;
+var C_qr = new QRCode(document.getElementById("C_qr"), {
+	text: C_newPair.addr,
+	width: 128,
+	height: 128,
+	colorDark : "#000000",
+	colorLight : "#ffffff",
+	correctLevel : QRCode.CorrectLevel.H
+});
+</script>
+</body>
+</html>
