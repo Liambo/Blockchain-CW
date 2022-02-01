@@ -1,4 +1,5 @@
 import datetime
+import time
 import hashlib
 import random
 import ecdsa
@@ -87,6 +88,16 @@ def load_wallet(wif):
     return(addr, sk, vk)
 
 
+def test_difficulty(tx):
+    results = [[] for _ in range(10)]
+    for diff in range(10):
+        for iter in range(10):
+            block = Block(1, '223fc19076ef413010f4077c7b5ee1b4ff9f91a1efa88cff582a97f75dcac481', diff+1, tx)
+            results[diff].append(block.dur)
+            print('done test {} of 10 for difficulty {}'.format(iter+1, diff+1))
+        print('results for difficulty '+str(diff+1)+': '+str(results[diff]))
+
+
 class Wallet:
     def __init__(self, id, privkey=False):
         self.id = id
@@ -103,7 +114,7 @@ class Wallet:
         print("Private key: " + self.priv_key.to_string().hex())
         print("Public key: " + self.pub_key.to_string().hex())
     
-    def construct_tx(self, blockchain, input_txids, input_indexs, outputs, amounts):
+    def construct_tx(self, blockchain, unconfirmed_tx, input_txids, input_indexs, outputs, amounts):
         if len(input_txids) == 0 or len(outputs) == 0: # Various error checks...
             print('Error: Input or output lists empty')
             return
@@ -138,6 +149,18 @@ class Wallet:
                         break
                 if confirmed:
                     break
+            if not confirmed: # If tx not found on blockchain, check pool of unconfirmed txs
+                for checking_tx in unconfirmed_tx:
+                    if input_txids[i] == hashlib.sha256(checking_tx.encode()).hexdigest(): # If TXID found
+                        confirmed = True
+                        input_no = int('0x' + checking_tx[:2], 16) # No. of inputs in found transaction
+                        output_start = 4 + input_no * 194 + input_indexs[i] * 136 # Index of where relevant output will start
+                        output_amount = int('0x' + checking_tx[output_start:output_start+8], 16) # Amount being redeemed in output
+                        input_sum += output_amount
+                        scriptsig = self.priv_key.sign(checking_tx.encode()).hex() # Generate unlocking script for this output
+                        vout = '0'*(2 - len(hex(input_indexs[i])[2:])) + hex(input_indexs[i])[2:] # Ensure output index is of correct length
+                        tx += input_txids[i] + vout + scriptsig # Append all to transaction
+                        break
         if not confirmed: # Checking if last TXID was actually found
             print('Error: TXID '+ input_txids[i-1] + ' not found')
             return
@@ -168,7 +191,7 @@ class Block:
         if self.valid_tx != True:
             print(self.valid_tx)
         self.merkle_root = construct_merkle(hash_list(tx))
-        self.nonce = self.mine_block()
+        self.nonce, self.dur = self.mine_block()
         self.header = [self.block_id, self.previous_block_hash, self.nonce, self.timestamp, self.merkle_root]
         self.hash = self.get_hash(self.nonce)
 
@@ -178,10 +201,12 @@ class Block:
         return hashlib.sha256(header.encode()).hexdigest()
     
     def mine_block(self):
+        start = time.time()
         nonce = random.randint(0, 4294967296)
         while self.get_hash(nonce)[:self.difficulty] != "0"*self.difficulty:
             nonce = random.randint(0, 4294967296)
-        return nonce
+        dur = time.time() - start
+        return nonce, dur
     
     def display_info(self):
         print('Block ID: '+self.block_id)
@@ -199,14 +224,16 @@ class Block:
         for tx in self.tx: # Loop through all transactions to validate
             input_sum = 0
             output_sum = 0
-            inputs = int("0x" + tx[:2], 16) # Get no. of inputs form current transaction
+            inputs = int("0x" + tx[:2], 16) # Get no. of inputs from current transaction
             inputs_length = inputs*194+2 # Total length of inputs in tx
             for i in range(inputs): # Loop to do verifications for every input (check input not already redeemed & check signatures)
                 txid_verified = False
                 txid = tx[2+194*i:66+194*i] # TXID currently being checked
+                txvout = tx[66+194*i:68+194*i]
+                txid_occurences = 0 # Counts no. of times TXID is found in blockchain & transaction pool. If there is no double spend attempt, should only occur once.
                 output = int("0x" + tx[66+194*i:68+194*i], 16) # Relevant position in output of previous transaction
                 scriptsig = bytes.fromhex(tx[68+194*i:196+194*i]) # Scriptsig of input to be verified
-                for block in reversed(block_chain): # Loop through blockchain to check prev. transactions. This is done in reverse to be faster on long blockchains.
+                for block in reversed(block_chain + [self]): # Loop through current block & blockchain to check prev. transactions. This is done in reverse to be faster on long blockchains, since recent transactions are more likely to be spent first, whereas older ones may already be spent.
                     for validate_tx in reversed(block.tx): # We loop through transactions in reverse order so if we verify the transaction we can break, rather than having to check remaining transactions for double spend.
                         validate_inputs = int("0x" + validate_tx[:2], 16) # No. of inputs in tx being checked
                         output_start = 4+validate_inputs*194 + output*136 # Start of our relevant output
@@ -222,15 +249,18 @@ class Block:
                                 return('Error: Invalid scriptsig in transaction: '+tx)
                         for j in range(validate_inputs): # Check all inputs of tx to check for double spend attempts
                             validate_txid = validate_tx[2+194*j:66+194*j]
-                            if validate_txid == txid:
-                                return('Error: Double spend attempt in transaction: '+tx)
-                    if txid_verified: # If tx has been verified, we know it is also not a double spend attempt as previous attempts to spend the output would have ben found after the original output.
+                            validate_txvout = validate_tx[66+194*j:68+194*j]
+                            if validate_txid == txid and validate_txvout == txvout: # If the transaction ID and output matches the ID and output of the transaction currently being verified...
+                                txid_occurences += 1 # We add 1 ot occurences. The first 1 will probably be us checking against the transaction being verified, but any subsequent matches would indicate a double spend attempt.
+                    if txid_verified: # If tx has been verified, we know it is also not a double spend attempt as previous attempts to spend the output would have ben found after the original output in the blockchain.
                         break
+                if txid_occurences > 1: # If the txid was found in the input of more than 1 transaction, we know it was a double spend attempt (we count our own transaction once)
+                    return('Error: Double spend attempt in transaction: '+tx)
             outputs =  int("0x" + tx[inputs_length:inputs_length+2], 16)
             for i in range(outputs): # Sum up all outputs, check if equal to inputs
                 output_amount = int("0x" + tx[inputs_length+2+i*136:inputs_length+10+i*136], 16)
                 output_sum += output_amount
-            if input_sum != output_sum:
+            if input_sum != output_sum and inputs != 0:
                 return('Error: Transaction inputs & outputs don\'t sum for transaction: '+tx)
         return True
 
@@ -239,6 +269,7 @@ class Block:
         return Block("0", "0", 0, tx)
 
 
+testing = True # Set true if testing block mining times
 block_chain = [Block.create_genesis_block(["0001000f4240b0cd4e655af53f1c865782864e15aa5d414b8fa1fa2537e90903661f345a02ea309e2c6f488480a6a4fd89c182b834c8ec1b78e2a33751d7fb05dd2bf6fb7f71"])]
 genesis_hash = block_chain[0].hash
 print("The genesis block has been created.")
@@ -249,6 +280,15 @@ B = Wallet("B", "KwR7ekm6VmQJt7rHv3LXTdpSRiQJ3BdM2Ac97QyJ6YeeZNNpSdD9")
 B.display_info()
 C = Wallet("C", "L2ywvanKbTZ2x17uXtjKsLFJpaMgMJWJLASpLJqEQPH8yTQVtZq6")
 C.display_info()
-tx = A.construct_tx(block_chain, ['45d7e470fcbd2c9dfd7086178044a58f0bc31bbc00bc581ac77f23a261c0cdc6'], [0], ['064eabd846cc09740d00f27dc149ad6a376fa275df5de265e6b94111915e29023e08fc9c1d07a86d77090871b3ac77ad507fcd9a41a636c61990549123aaea48'], [50000])
-block_chain.append(Block(1, '223fc19076ef413010f4077c7b5ee1b4ff9f91a1efa88cff582a97f75dcac481', 3, [tx]))
-print(block_chain)
+unconfirmed_tx = [] # Unconfirmed transaction pool. This should be reset after mining each block in actual use.
+tx1 = A.construct_tx(block_chain, unconfirmed_tx, ['45d7e470fcbd2c9dfd7086178044a58f0bc31bbc00bc581ac77f23a261c0cdc6'], [0], ['064eabd846cc09740d00f27dc149ad6a376fa275df5de265e6b94111915e29023e08fc9c1d07a86d77090871b3ac77ad507fcd9a41a636c61990549123aaea48'], [50000])
+unconfirmed_tx.append(tx1)
+tx2 = A.construct_tx(block_chain, unconfirmed_tx, [hashlib.sha256(tx1.encode()).hexdigest()], [1], ['064eabd846cc09740d00f27dc149ad6a376fa275df5de265e6b94111915e29023e08fc9c1d07a86d77090871b3ac77ad507fcd9a41a636c61990549123aaea48', '710b5fbb17bb0fcbe8547193337927ac77c633b4dbf02313b5e13b720786bf332e03875ca2ac00896c856c180322204310fb15ea7dd778adc75e1755de9f5816'], [20000, 10000])
+unconfirmed_tx.append(tx2)
+tx3 = B.construct_tx(block_chain, unconfirmed_tx, [hashlib.sha256(tx1.encode()).hexdigest()], [0], ['b0cd4e655af53f1c865782864e15aa5d414b8fa1fa2537e90903661f345a02ea309e2c6f488480a6a4fd89c182b834c8ec1b78e2a33751d7fb05dd2bf6fb7f71'], [30000])
+unconfirmed_tx.append(tx3)
+if testing:
+    results = test_difficulty(unconfirmed_tx)
+    print(results)
+block_chain.append(Block(1, '223fc19076ef413010f4077c7b5ee1b4ff9f91a1efa88cff582a97f75dcac481', 3, unconfirmed_tx))
+print('Successfully added block to blockchain')
