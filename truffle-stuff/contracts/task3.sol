@@ -10,6 +10,8 @@ contract Assignment{
     uint public creationTime;
     uint public maxMark;
 
+    // The teacher is the deployer of the contract, and there is 1 contract for every student.
+    // mark starts at maxMark and decreases to 0 after 10 days.
     constructor(address pupilAddress, uint max) {
         teacher = msg.sender;
         pupil = pupilAddress;
@@ -18,6 +20,7 @@ contract Assignment{
         creationTime = block.timestamp;
     }
 
+    // Submit function allows student to submit their work to the teacher.
     function Submit() public {
         uint time = block.timestamp - creationTime;
         require(msg.sender == pupil,
@@ -36,3 +39,4 @@ contract Assignment{
         }
     }
 }
+

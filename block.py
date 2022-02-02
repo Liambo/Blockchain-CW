@@ -90,12 +90,15 @@ def load_wallet(wif):
 
 def test_difficulty(tx):
     results = [[] for _ in range(10)]
+    attempts = [[] for _ in range(10)]
     for diff in range(10):
         for iter in range(10):
             block = Block(1, '223fc19076ef413010f4077c7b5ee1b4ff9f91a1efa88cff582a97f75dcac481', diff+1, tx)
             results[diff].append(block.dur)
+            attempts[diff].append(block.attempts)
             print('done test {} of 10 for difficulty {}'.format(iter+1, diff+1))
-        print('results for difficulty '+str(diff+1)+': '+str(results[diff]))
+        print('times for difficulty {}: {}'.format(diff+1, results[diff]))
+        print('attempts for diffictuly {}: {}'.format(diff+1, attempts[diff]))
 
 
 class Wallet:
@@ -191,7 +194,7 @@ class Block:
         if self.valid_tx != True:
             print(self.valid_tx)
         self.merkle_root = construct_merkle(hash_list(tx))
-        self.nonce, self.dur = self.mine_block()
+        self.nonce, self.dur, self.attempts = self.mine_block()
         self.header = [self.block_id, self.previous_block_hash, self.nonce, self.timestamp, self.merkle_root]
         self.hash = self.get_hash(self.nonce)
 
@@ -202,11 +205,13 @@ class Block:
     
     def mine_block(self):
         start = time.time()
+        attempts = 1
         nonce = random.randint(0, 4294967296)
         while self.get_hash(nonce)[:self.difficulty] != "0"*self.difficulty:
+            attempts += 1
             nonce = random.randint(0, 4294967296)
         dur = time.time() - start
-        return nonce, dur
+        return nonce, dur, attempts
     
     def display_info(self):
         print('Block ID: '+self.block_id)
@@ -269,26 +274,26 @@ class Block:
         return Block("0", "0", 0, tx)
 
 
-testing = True # Set true if testing block mining times
+testing = False # Set to true if testing block mining times.
 block_chain = [Block.create_genesis_block(["0001000f4240b0cd4e655af53f1c865782864e15aa5d414b8fa1fa2537e90903661f345a02ea309e2c6f488480a6a4fd89c182b834c8ec1b78e2a33751d7fb05dd2bf6fb7f71"])]
-genesis_hash = block_chain[0].hash
+genesis_hash = block_chain[0].hash # Creation of genesis block. Coinbase transaction sends 1,000,000 coins to A.
 print("The genesis block has been created.")
 block_chain[0].display_info()
 A = Wallet("A", "L2WNfN7uaW58U2STZ52d2QzKreokSYJbj93j5e7NTbUGiRshBJ2f")
-A.display_info()
+A.display_info() # Creating wallet for A.
 B = Wallet("B", "KwR7ekm6VmQJt7rHv3LXTdpSRiQJ3BdM2Ac97QyJ6YeeZNNpSdD9")
-B.display_info()
+B.display_info() # Creating wallet for B.
 C = Wallet("C", "L2ywvanKbTZ2x17uXtjKsLFJpaMgMJWJLASpLJqEQPH8yTQVtZq6")
-C.display_info()
+C.display_info() # Creating wallet for C.
 unconfirmed_tx = [] # Unconfirmed transaction pool. This should be reset after mining each block in actual use.
 tx1 = A.construct_tx(block_chain, unconfirmed_tx, ['45d7e470fcbd2c9dfd7086178044a58f0bc31bbc00bc581ac77f23a261c0cdc6'], [0], ['064eabd846cc09740d00f27dc149ad6a376fa275df5de265e6b94111915e29023e08fc9c1d07a86d77090871b3ac77ad507fcd9a41a636c61990549123aaea48'], [50000])
-unconfirmed_tx.append(tx1)
+unconfirmed_tx.append(tx1) # Creation of first transaction: A sends 50,000 coins to B.
 tx2 = A.construct_tx(block_chain, unconfirmed_tx, [hashlib.sha256(tx1.encode()).hexdigest()], [1], ['064eabd846cc09740d00f27dc149ad6a376fa275df5de265e6b94111915e29023e08fc9c1d07a86d77090871b3ac77ad507fcd9a41a636c61990549123aaea48', '710b5fbb17bb0fcbe8547193337927ac77c633b4dbf02313b5e13b720786bf332e03875ca2ac00896c856c180322204310fb15ea7dd778adc75e1755de9f5816'], [20000, 10000])
-unconfirmed_tx.append(tx2)
+unconfirmed_tx.append(tx2) # Creation of second transaction: A sends 20,000 coins to B and 10,000 coins to C. Input is from output of first transaction.
 tx3 = B.construct_tx(block_chain, unconfirmed_tx, [hashlib.sha256(tx1.encode()).hexdigest()], [0], ['b0cd4e655af53f1c865782864e15aa5d414b8fa1fa2537e90903661f345a02ea309e2c6f488480a6a4fd89c182b834c8ec1b78e2a33751d7fb05dd2bf6fb7f71'], [30000])
-unconfirmed_tx.append(tx3)
-if testing:
+unconfirmed_tx.append(tx3) # Creation of third transaction: B sends 30,000 coins to A. Input is from output of first transaction.
+if testing: # Loop to test mining times: Generates block 10 times for difficulty 1-10.
     results = test_difficulty(unconfirmed_tx)
     print(results)
-block_chain.append(Block(1, '223fc19076ef413010f4077c7b5ee1b4ff9f91a1efa88cff582a97f75dcac481', 3, unconfirmed_tx))
+block_chain.append(Block(1, '223fc19076ef413010f4077c7b5ee1b4ff9f91a1efa88cff582a97f75dcac481', 3, unconfirmed_tx)) # Generates block with trasactions 1-3 and appends to blockchain.
 print('Successfully added block to blockchain')
